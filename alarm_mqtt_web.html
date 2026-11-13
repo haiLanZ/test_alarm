@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#080a0e"><title>ESP32 闹钟</title>
+  <script src="https://unpkg.com/mqtt@5.10.4/dist/mqtt.min.js"></script>
+  <style>
+    :root{color-scheme:dark;--bg:#080a0e;--card:#191c22;--muted:#9da1aa;--blue:#1685ff;--green:#36c873}
+    *{box-sizing:border-box}body{margin:0 auto;background:var(--bg);color:#f5f6f8;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom));max-width:720px}
+    header{padding:22px 4px 12px;display:flex;align-items:center;justify-content:space-between}h1{font-size:30px;margin:0}
+    .connection,.card,.form{background:var(--card);border-radius:18px;padding:16px;margin:12px 0}.connection h2,.form h2{font-size:18px;margin:0 0 14px}
+    .field{display:block;color:var(--muted);font-size:13px;margin:10px 0 5px}input,button{font:inherit}
+    input[type=text],input[type=password],input[type=number],input[type=time]{width:100%;background:#282b32;color:white;border:1px solid #3a3d45;border-radius:10px;padding:11px}
+    .connect,.add{width:100%;border:0;border-radius:12px;background:var(--blue);color:white;padding:12px;margin-top:12px;font-weight:600}
+    .status{font-size:13px;color:var(--muted);margin:9px 2px 0;min-height:1.2em}.status.ok{color:var(--green)}.status.error{color:#ff737b}
+    .alarm-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.time{font-size:38px;font-weight:650;letter-spacing:-1px}
+    .label{font-size:18px;margin:2px 0 15px;overflow-wrap:anywhere}.days{display:flex;gap:7px;flex-wrap:wrap}
+    .day{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:#42454d;color:#d0d2d7;font-size:14px}.day.on{background:var(--blue);color:#fff}
+    .actions{display:flex;align-items:center;gap:7px}.icon{border:0;background:transparent;color:#c4c7ce;font-size:20px;padding:8px}
+    .switch{appearance:none;width:52px;height:31px;border-radius:18px;background:#53565e;position:relative;margin:0;flex:none;transition:.15s}
+    .switch:before{content:"";width:25px;height:25px;border-radius:50%;background:#fff;position:absolute;left:3px;top:3px;transition:.15s}.switch:checked{background:var(--green)}.switch:checked:before{left:24px}
+    .state,.hint{color:var(--muted);font-size:13px}.state{margin-top:12px}.add{font-size:19px;padding:12px;margin:14px 0}.add span{font-size:26px;vertical-align:-2px;margin-right:8px}
+    .week{display:flex;justify-content:space-between;gap:4px;margin:8px 0 18px}.week label{display:flex;flex-direction:column;align-items:center;gap:5px;color:var(--muted);font-size:13px}.week input{accent-color:var(--blue);width:20px;height:20px}
+    .buttons{display:flex;gap:10px;margin-top:16px}.buttons button{border:0;border-radius:10px;padding:12px 18px}.cancel{background:#3a3d45;color:white}.save{background:var(--blue);color:white;flex:1}
+    .empty{color:var(--muted);text-align:center;padding:32px 10px}.note{font-size:12px;line-height:1.55;color:var(--muted);margin:12px 4px}[hidden]{display:none!important}
+    @media(min-width:600px){.connection-fields{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}.connection-fields .wide{grid-column:1/-1}}
+  </style>
+</head>
+<body>
+  <header><h1>闹钟</h1><span id="connectionBadge" class="hint">未连接</span></header>
+  <section class="connection">
+    <h2>连接设备</h2><div class="connection-fields">
+      <div class="wide"><label class="field" for="host">EMQX 主机</label><input id="host" type="text" value="da11013f.ala.cn-hangzhou.emqxsl.cn"></div>
+      <div><label class="field" for="port">安全 WebSocket 端口</label><input id="port" type="number" value="8084" inputmode="numeric"></div>
+      <div><label class="field" for="username">MQTT 用户名</label><input id="username" type="text" value="alarm" autocomplete="username"></div>
+      <div class="wide"><label class="field" for="password">MQTT 密码</label><input id="password" type="text" autocomplete="off" placeholder="填写 MQTT 密码"></div>
+    </div>
+    <button id="connectButton" class="connect" type="button">连接并读取闹钟</button><div id="status" class="status">首次填写连接信息；保存后下次打开会自动连接。</div>
+  </section>
+  <main id="list"><div class="empty">连接后读取设备中的闹钟</div></main>
+  <button id="addButton" class="add" type="button" disabled><span>＋</span>添加新闹钟</button>
+  <section id="form" class="form" hidden><h2 id="formTitle">添加闹钟</h2>
+    <form id="alarmForm"><label class="field" for="alarmTime">时间</label><input id="alarmTime" name="time" type="time" value="07:00" required>
+      <p class="field">重复星期（不勾选表示单次）</p><div id="week" class="week"></div>
+      <label class="field" for="alarmLabel">标签</label><input id="alarmLabel" name="label" type="text" maxlength="24" placeholder="例如：起床、健身">
+      <div class="buttons"><button id="cancelButton" class="cancel" type="button">取消</button><button class="save" type="submit">保存</button></div>
+    </form>
+  </section>
+  <p class="note">本页通过 MQTT over WebSocket Secure 与 EMQX 通信，可托管在 HTTPS 静态网站。连接信息保存在当前浏览器中，下次打开自动连接；闹钟仍保存在 ESP32 中。</p>
+  <script>
+    const DEVICE="alarm/esp32s3-001", DAYS=["日","一","二","三","四","五","六"];
+    let client=null,alarms=[],editingId=0,waitingTimer=null;
+    const $=id=>document.getElementById(id), statusEl=$("status"), STORAGE_KEY="esp32-alarm-mqtt-config-v1";
+    function setStatus(text,kind){statusEl.textContent=text;statusEl.className="status "+(kind||"");}
+    function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+    $("week").innerHTML=DAYS.map((d,i)=>'<label>'+d+'<input type="checkbox" value="'+i+'"></label>').join("");
+    function render(){
+      if(!alarms.length){$("list").innerHTML='<div class="empty">设备中还没有闹钟，点击下方添加</div>';return;}
+      $("list").innerHTML=alarms.map(a=>'<article class="card"><div class="alarm-row"><div class="time">'+String(a.hour).padStart(2,"0")+':'+String(a.minute).padStart(2,"0")+'</div><div class="actions"><input class="switch" type="checkbox" aria-label="启用闹钟" '+(a.enabled?"checked":"")+' onchange="toggleAlarm('+Number(a.id)+',this.checked)"><button class="icon" type="button" title="编辑" onclick="editAlarm('+Number(a.id)+')">✎</button><button class="icon" type="button" title="删除" onclick="deleteAlarm('+Number(a.id)+')">⌫</button></div></div><div class="label">'+esc(a.label||"闹钟")+'</div><div class="days">'+DAYS.map((d,i)=>'<span class="day '+((Number(a.days)>>i)&1?"on":"")+'">'+d+'</span>').join("")+'</div><div class="state">'+(a.enabled?(Number(a.days)?"重复闹钟":"单次闹钟"):"未开启")+'</div></article>').join("");
+    }
+    function publish(command){
+      if(!client||!client.connected){setStatus("尚未连接 MQTT。","error");return;}
+      client.publish(DEVICE+"/cmd",JSON.stringify(command),{qos:0,retain:false},err=>setStatus(err?"发送失败："+err.message:"已发送 "+command.action+" 命令，等待设备响应…",err?"error":""));
+    }
+    function requestList(){
+      clearTimeout(waitingTimer);publish({action:"list"});
+      waitingTimer=setTimeout(()=>setStatus("暂未收到设备响应。请确认 ESP32 在线并已连接到 EMQX。","error"),8000);
+    }
+    function saveConnectionConfig(){
+      localStorage.setItem(STORAGE_KEY,JSON.stringify({host:$("host").value.trim(),port:$("port").value,username:$("username").value.trim(),password:$("password").value}));
+    }
+    $("connectButton").onclick=()=>{
+      if(client){client.end(true);client=null;}
+      const host=$("host").value.trim(),port=Number($("port").value),username=$("username").value.trim(),password=$("password").value;
+      if(!host||!port||!username||!password){setStatus("请填写主机、端口、用户名和密码。","error");return;}
+      saveConnectionConfig();
+      $("connectButton").disabled=true;setStatus("正在连接 EMQX…");
+      client=mqtt.connect("wss://"+host+":"+port+"/mqtt",{clientId:"alarm-web-"+Math.random().toString(16).slice(2,10),username,password,clean:true,connectTimeout:10000,reconnectPeriod:0,protocolVersion:4});
+      client.on("connect",()=>{
+        $("connectionBadge").textContent="已连接";$("connectionBadge").style.color="var(--green)";$("addButton").disabled=false;$("connectButton").disabled=false;
+        setStatus("MQTT 已连接，正在读取闹钟…","ok");
+        client.subscribe(DEVICE+"/#", {qos:0},err=>err?setStatus("订阅失败："+err.message,"error"):requestList());
+      });
+      client.on("message",(topic,buffer)=>{
+        const text=new TextDecoder().decode(buffer);
+        try{
+          const value=JSON.parse(text);
+          if(topic===DEVICE+"/alarms"&&Array.isArray(value)){alarms=value;render();clearTimeout(waitingTimer);setStatus("已读取 "+alarms.length+" 条闹钟记录。","ok");}
+          else if(topic===DEVICE+"/ack"){clearTimeout(waitingTimer);setStatus(value.ok?"设备已完成："+value.action+(value.id?"（编号 "+value.id+"）":""):"设备拒绝命令："+(value.error||"未知错误"),value.ok?"ok":"error");}
+          else if(topic===DEVICE+"/status"){setStatus("设备状态："+text,text==="online"?"ok":"");}
+        }catch(e){setStatus("收到无法解析的消息："+topic,"error");}
+      });
+      client.on("error",err=>{setStatus("MQTT 连接错误："+err.message,"error");$("connectButton").disabled=false;});
+      client.on("close",()=>{$("connectionBadge").textContent="未连接";$("connectionBadge").style.color="";$("addButton").disabled=true;$("connectButton").disabled=false;});
+    };
+    function openForm(a){
+      editingId=a?Number(a.id):0;$("alarmForm").reset();
+      $("alarmTime").value=a?String(a.hour).padStart(2,"0")+":"+String(a.minute).padStart(2,"0"):"07:00";
+      $("alarmLabel").value=a?(a.label||""):"";
+      document.querySelectorAll("#week input").forEach(x=>x.checked=a?!!((Number(a.days)>>Number(x.value))&1):false);
+      $("formTitle").textContent=a?"编辑闹钟":"添加闹钟";$("form").hidden=false;$("form").scrollIntoView({behavior:"smooth",block:"start"});
+    }
+    $("addButton").onclick=()=>openForm(null);$("cancelButton").onclick=()=>{$("form").hidden=true;};
+    window.editAlarm=id=>{const a=alarms.find(x=>Number(x.id)===id);if(a)openForm(a);};
+    window.toggleAlarm=(id,enabled)=>publish({action:"toggle",id,enabled});
+    window.deleteAlarm=id=>{if(confirm("确定删除这个闹钟吗？"))publish({action:"delete",id});};
+    $("alarmForm").onsubmit=e=>{
+      e.preventDefault();let days=0;
+      document.querySelectorAll("#week input:checked").forEach(x=>days|=1<<Number(x.value));
+      const p=$("alarmTime").value.split(":");
+      const command={action:editingId?"edit":"add",time:p[0]+":"+p[1],days,label:$("alarmLabel").value.trim()};
+      if(editingId)command.id=editingId;else command.enabled=true;
+      publish(command);$("form").hidden=true;
+    };
+    window.addEventListener("beforeunload",()=>{if(client)client.end(true);});
+    try{
+      const saved=JSON.parse(localStorage.getItem(STORAGE_KEY)||"null");
+      if(saved){$("host").value=saved.host||$("host").value;$("port").value=saved.port||$("port").value;$("username").value=saved.username||$("username").value;$("password").value=saved.password||"";if(saved.password)setTimeout(()=>$("connectButton").click(),250);}
+    }catch(e){localStorage.removeItem(STORAGE_KEY);}
+  </script>
+</body>
+</html>
