@@ -35,7 +35,7 @@
       <div><label class="field" for="username">MQTT 用户名</label><input id="username" type="text" value="alarm" autocomplete="username"></div>
       <div class="wide"><label class="field" for="password">MQTT 密码</label><input id="password" type="text" autocomplete="off" placeholder="填写 MQTT 密码"></div>
     </div>
-    <button id="connectButton" class="connect" type="button">连接并读取闹钟</button><div id="status" class="status">首次填写连接信息；保存后下次打开会自动连接。</div>
+    <button id="connectButton" class="connect" type="button">连接并读取闹钟</button><div id="status" class="status">每次打开页面都要重新输入 MQTT 密码。</div>
   </section>
   <main id="list"><div class="empty">连接后读取设备中的闹钟</div></main>
   <button id="addButton" class="add" type="button" disabled><span>＋</span>添加新闹钟</button>
@@ -46,11 +46,13 @@
       <div class="buttons"><button id="cancelButton" class="cancel" type="button">取消</button><button class="save" type="submit">保存</button></div>
     </form>
   </section>
-  <p class="note">本页通过 MQTT over WebSocket Secure 与 EMQX 通信，可托管在 HTTPS 静态网站。连接信息保存在当前浏览器中，下次打开自动连接；闹钟仍保存在 ESP32 中。</p>
+  <p class="note">本页通过 MQTT over WebSocket Secure 与 EMQX 通信，可托管在 HTTPS 静态网站。密码仅用于本次 MQTT 连接，不会保存在浏览器；闹钟仍保存在 ESP32 中。</p>
   <script>
     const DEVICE="alarm/esp32s3-001", DAYS=["日","一","二","三","四","五","六"];
     let client=null,alarms=[],editingId=0,waitingTimer=null;
     const $=id=>document.getElementById(id), statusEl=$("status"), STORAGE_KEY="esp32-alarm-mqtt-config-v1";
+    // 清除旧版本可能存储的密码和连接资料；本版本每次打开均需手动输入密码。
+    localStorage.removeItem(STORAGE_KEY);
     function setStatus(text,kind){statusEl.textContent=text;statusEl.className="status "+(kind||"");}
     function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
     $("week").innerHTML=DAYS.map((d,i)=>'<label>'+d+'<input type="checkbox" value="'+i+'"></label>').join("");
@@ -66,14 +68,10 @@
       clearTimeout(waitingTimer);publish({action:"list"});
       waitingTimer=setTimeout(()=>setStatus("暂未收到设备响应。请确认 ESP32 在线并已连接到 EMQX。","error"),8000);
     }
-    function saveConnectionConfig(){
-      localStorage.setItem(STORAGE_KEY,JSON.stringify({host:$("host").value.trim(),port:$("port").value,username:$("username").value.trim(),password:$("password").value}));
-    }
     $("connectButton").onclick=()=>{
       if(client){client.end(true);client=null;}
       const host=$("host").value.trim(),port=Number($("port").value),username=$("username").value.trim(),password=$("password").value;
       if(!host||!port||!username||!password){setStatus("请填写主机、端口、用户名和密码。","error");return;}
-      saveConnectionConfig();
       $("connectButton").disabled=true;setStatus("正在连接 EMQX…");
       client=mqtt.connect("wss://"+host+":"+port+"/mqtt",{clientId:"alarm-web-"+Math.random().toString(16).slice(2,10),username,password,clean:true,connectTimeout:10000,reconnectPeriod:0,protocolVersion:4});
       client.on("connect",()=>{
@@ -113,10 +111,6 @@
       publish(command);$("form").hidden=true;
     };
     window.addEventListener("beforeunload",()=>{if(client)client.end(true);});
-    try{
-      const saved=JSON.parse(localStorage.getItem(STORAGE_KEY)||"null");
-      if(saved){$("host").value=saved.host||$("host").value;$("port").value=saved.port||$("port").value;$("username").value=saved.username||$("username").value;$("password").value=saved.password||"";if(saved.password)setTimeout(()=>$("connectButton").click(),250);}
-    }catch(e){localStorage.removeItem(STORAGE_KEY);}
   </script>
 </body>
 </html>
